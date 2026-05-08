@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import re
+import time
 from glob import has_magic
 from pathlib import Path
 
@@ -403,6 +404,7 @@ def url_to_fs(url, **kwargs):
     urlpath : str
         The file-systems-specific URL for ``url``.
     """
+    _start_time = time.perf_counter()
     url = stringify_path(url)
     # non-FS arguments that appear in fsspec.open()
     # inspect could keep this in sync with open()'s signature
@@ -430,6 +432,8 @@ def url_to_fs(url, **kwargs):
         inkwargs["fo"] = urls
     urlpath, protocol, _ = chain[0]
     fs = filesystem(protocol, **inkwargs)
+    _duration = time.perf_counter() - _start_time
+    logger.info(f"url_to_fs took {_duration:.6f} seconds for url: {url}")
     return fs, urlpath
 
 
