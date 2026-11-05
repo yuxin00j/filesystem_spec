@@ -1061,25 +1061,39 @@ def test_fork_does_not_finalize_inherited_instances():
     if "fork" not in multiprocessing.get_all_start_methods():
         pytest.skip("Fork method is not available on this platform")
 
-    parent = os.getpid()
-
     class FinalizerFS(DummyTestFS):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._owner_pid = os.getpid()
+
         def __del__(self):
-            # A finalizer running in the forked child, before exec, can hang
-            # there (e.g. gRPC channel shutdown waiting for a poller thread).
-            if os.getpid() != parent:
+            # Finalizing an inherited instance in a forked descendant can hang
+            # (e.g. gRPC channel shutdown waiting on a poller thread) or delete
+            # resources still in use by the ancestor (e.g. a simplecache tempdir).
+            if os.getpid() != getattr(self, "_owner_pid", os.getpid()):
                 os._exit(3)
 
-    FinalizerFS()  # only the instance cache refers to it
+    def run_child():
+        if FinalizerFS._cache:
+            os._exit(4)
+        FinalizerFS("child")  # only the child's cache refers to it
+        pid = os.fork()
+        if pid == 0:
+            os._exit(5 if FinalizerFS._cache else 0)
+        _, status = os.waitpid(pid, 0)
+        os._exit(os.waitstatus_to_exitcode(status))
+
+    FinalizerFS("parent")  # only the parent's cache refers to it
     try:
-        # Exit code 3: the parent's instance was finalized in the child;
-        # 4: the child still sees the parent's instance in the cache.
-        p = multiprocessing.get_context("fork").Process(
-            target=lambda: os._exit(4 if FinalizerFS._cache else 0), daemon=True
-        )
+        # Exit codes: 3 = an ancestor's instance was finalized in a descendant;
+        # 4 = child cache not reset; 5 = grandchild cache not reset.
+        p = multiprocessing.get_context("fork").Process(target=run_child, daemon=True)
         p.start()
         p.join(timeout=10)
-        assert p.exitcode == 0
+        if p.is_alive():
+            p.kill()
+            p.join()
+        assert p.exitcode == 0, f"unexpected child exitcode {p.exitcode}"
     finally:
         FinalizerFS.clear_instance_cache()
 
