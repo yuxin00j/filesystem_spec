@@ -1055,6 +1055,35 @@ def test_fork_deadlock():
     assert result is True
 
 
+def test_fork_does_not_finalize_inherited_instances():
+    import multiprocessing
+
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("Fork method is not available on this platform")
+
+    parent = os.getpid()
+
+    class FinalizerFS(DummyTestFS):
+        def __del__(self):
+            # A finalizer running in the forked child, before exec, can hang
+            # there (e.g. gRPC channel shutdown waiting for a poller thread).
+            if os.getpid() != parent:
+                os._exit(3)
+
+    FinalizerFS()  # only the instance cache refers to it
+    try:
+        # Exit code 3: the parent's instance was finalized in the child;
+        # 4: the child still sees the parent's instance in the cache.
+        p = multiprocessing.get_context("fork").Process(
+            target=lambda: os._exit(4 if FinalizerFS._cache else 0), daemon=True
+        )
+        p.start()
+        p.join(timeout=10)
+        assert p.exitcode == 0
+    finally:
+        FinalizerFS.clear_instance_cache()
+
+
 @pytest.mark.parametrize("content", [b"", b"hello\nworld"])
 def test_buffered_file_len(m, content):
     m.pipe_file("data", content)

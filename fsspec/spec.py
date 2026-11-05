@@ -39,12 +39,18 @@ FORK_AVAILABLE = hasattr(os, "register_at_fork")
 
 if FORK_AVAILABLE:
     _registered_classes = weakref.WeakSet()
+    # Caches inherited from the parent process. A forked child starts with empty
+    # caches but keeps the parent's instances alive: freeing them here would run
+    # their finalizers in the child before exec, where they can hang (e.g. gRPC
+    # channel shutdown waits for a poller thread that the child does not have).
+    _inherited_caches = []
 
     def _reset_instances_lock():
         for cls in _registered_classes:
             cls._instantiation_lock = threading.RLock()
             cls._token_locks = {}
-            cls._cache.clear()
+            _inherited_caches.append(cls._cache)
+            cls._cache = type(cls._cache)()
             cls._pid = os.getpid()
 
     os.register_at_fork(after_in_child=_reset_instances_lock)
